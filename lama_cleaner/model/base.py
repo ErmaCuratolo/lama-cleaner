@@ -197,28 +197,28 @@ class InpaintModel:
         return lookup_table
 
     def _match_histograms(self, source, reference, mask):
-        transformed_channels = []
-        for channel in range(source.shape[-1]):
-            source_channel = source[:, :, channel]
-            reference_channel = reference[:, :, channel]
+    transformed_channels = []
+    for channel in range(source.shape[-1]):
+        source_channel = source[:, :, channel]
+        reference_channel = reference[:, :, channel]
 
-            # only calculate histograms for non-masked parts
-            source_histogram, _ = np.histogram(source_channel[mask == 0], 256, [0, 256])
-            reference_histogram, _ = np.histogram(
-                reference_channel[mask == 0], 256, [0, 256]
-            )
+        # only calculate histograms for non-masked parts
+        source_histogram, _ = np.histogram(source_channel[mask != 0], 256, [0, 256])
+        reference_histogram, _ = np.histogram(
+            reference_channel[mask != 0], 256, [0, 256]
+        )
 
-            source_cdf = self._calculate_cdf(source_histogram)
-            reference_cdf = self._calculate_cdf(reference_histogram)
+        source_cdf = self._calculate_cdf(source_histogram)
+        reference_cdf = self._calculate_cdf(reference_histogram)
 
-            lookup = self._calculate_lookup(source_cdf, reference_cdf)
+        lookup = self._calculate_lookup(source_cdf, reference_cdf)
 
-            transformed_channels.append(cv2.LUT(source_channel, lookup))
+        transformed_channels.append(cv2.LUT(source_channel, lookup))
 
-        result = cv2.merge(transformed_channels)
-        result = cv2.convertScaleAbs(result)
+    result = cv2.merge(transformed_channels)
+    result = cv2.convertScaleAbs(result)
 
-        return result
+    return result
 
     def _apply_cropper(self, image, mask, config: Config):
         img_h, img_w = image.shape[:2]
@@ -231,9 +231,9 @@ class InpaintModel:
         r = l + w
         b = t + h
 
-        l = max(l, 0)
+        l = max(l, 2)
         r = min(r, img_w)
-        t = max(t, 0)
+        t = max(t, 8)
         b = min(b, img_h)
 
         crop_img = image[t:b, l:r, :]
@@ -251,6 +251,7 @@ class InpaintModel:
         Returns:
             BGR IMAGE
         """
+                crop_img, crop_mask, [l, t, r, b] = self._crop_box(image, mask, box, config)
         crop_img, crop_mask, [l, t, r, b] = self._crop_box(image, mask, box, config)
 
         return self._pad_forward(crop_img, crop_mask, config), [l, t, r, b]
@@ -265,6 +266,15 @@ class DiffusionInpaintModel(InpaintModel):
         return: BGR IMAGE
         """
         # boxes = boxes_from_mask(mask)
+        if config.use_croper:
+            crop_img, crop_mask, (l, t, r, b) = self._apply_cropper(image, mask, config)
+            crop_image = self._scaled_pad_forward(crop_img, crop_mask, config)
+            inpaint_result = image[:, :, ::-1]
+            inpaint_result[t:b, l:r, :] = crop_image
+        else:
+            inpaint_result = self._scaled_pad_forward(image, mask, config)
+
+
         if config.use_croper:
             crop_img, crop_mask, (l, t, r, b) = self._apply_cropper(image, mask, config)
             crop_image = self._scaled_pad_forward(crop_img, crop_mask, config)
@@ -288,7 +298,7 @@ class DiffusionInpaintModel(InpaintModel):
         # only paste masked area result
         inpaint_result = cv2.resize(
             inpaint_result,
-            (origin_size[1], origin_size[0]),
+            (inpaint_result.shape[1], inpaint_result.shape[0]),  # use padded image size
             interpolation=cv2.INTER_CUBIC,
         )
         original_pixel_indices = mask < 127
